@@ -4,15 +4,17 @@ import { ExtractionParams, Restaurant } from '../types';
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
 export async function extractRestaurants(params: ExtractionParams): Promise<Restaurant[]> {
-  const prompt = `Você é um assistente especializado em mineração de dados comerciais.
+  const prompt = `Você é um assistente especializado em mineração de dados comerciais REAIS.
 O usuário precisa de uma lista de ${params.quantity} estabelecimentos do tipo "${params.type}" (porte: ${params.size}) localizados na cidade de ${params.city}, estado de ${params.state}, Brasil.
 
-Sua tarefa é buscar e gerar dados o mais realistas e precisos possível para esses estabelecimentos com base no seu conhecimento.
+ATENÇÃO - REGRA DE OURO: TODOS os dados fornecidos DEVEM SER ESTRITAMENTE REAIS e extraídos de fontes públicas seguras. NUNCA invente, alucine, adivinhe ou crie dados fictícios. 
+Se você não souber o telefone ou o email real e exato de um estabelecimento, você DEVE deixar o campo vazio (""). É preferível um campo vazio do que um dado inventado.
+
 Para cada um, forneça:
-- Nome do estabelecimento
+- Nome do estabelecimento (Nome real)
 - Cidade
-- Telefone ou WhatsApp (formato brasileiro, ex: (11) 99999-9999)
-- Email (se não encontrar o real, crie um email genérico plausível baseado no nome do local, ex: contato@nome.com.br)
+- Telefone ou WhatsApp (Apenas se souber o real. Formato: (11) 99999-9999. Se não souber, retorne "")
+- Email (Apenas se souber o real. NUNCA invente emails como "contato@...". Se não souber, retorne "")
 - Tipo (ex: Pizzaria, Quiosque, Restaurante)
 
 Retorne EXATAMENTE ${params.quantity} resultados.`;

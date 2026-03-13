@@ -1,6 +1,6 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { motion } from 'motion/react';
-import { Search, Download, MapPin, Building2, Hash, Maximize, Loader2, Store, ChefHat, Map, AlertCircle } from 'lucide-react';
+import { Search, Download, MapPin, Building2, Hash, Maximize, Loader2, Store, ChefHat, Map, AlertCircle, Trash2 } from 'lucide-react';
 import { extractRestaurants } from './services/gemini';
 import { exportToCSV } from './utils/export';
 import { ExtractionParams, Restaurant } from './types';
@@ -26,16 +26,54 @@ export default function App() {
     size: 'Qualquer'
   });
   
+  const [citiesForState, setCitiesForState] = useState<string[]>([]);
+  const [citySearch, setCitySearch] = useState('São Paulo');
+  const [showCityDropdown, setShowCityDropdown] = useState(false);
+  const cityDropdownRef = useRef<HTMLDivElement>(null);
+
   const [isLoading, setIsLoading] = useState(false);
   const [results, setResults] = useState<Restaurant[]>([]);
   const [error, setError] = useState<string | null>(null);
 
+  // Buscar cidades da API do IBGE quando o estado mudar
+  useEffect(() => {
+    async function fetchCities() {
+      if (!params.state) return;
+      try {
+        const res = await fetch(`https://servicodados.ibge.gov.br/api/v1/localidades/estados/${params.state}/municipios`);
+        const data = await res.json();
+        setCitiesForState(data.map((c: any) => c.nome));
+      } catch (e) {
+        console.error("Erro ao buscar cidades:", e);
+      }
+    }
+    fetchCities();
+  }, [params.state]);
+
+  // Fechar o dropdown de cidades ao clicar fora dele
+  useEffect(() => {
+    function handleClickOutside(event: MouseEvent) {
+      if (cityDropdownRef.current && !cityDropdownRef.current.contains(event.target as Node)) {
+        setShowCityDropdown(false);
+      }
+    }
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
+
   const handleExtract = async (e: React.FormEvent) => {
     e.preventDefault();
+    
+    // Validação da cidade
+    if (!citiesForState.includes(citySearch)) {
+      setError(`A cidade "${citySearch}" não foi encontrada no estado ${params.state}. Por favor, selecione uma cidade válida na lista.`);
+      return;
+    }
+
     setIsLoading(true);
     setError(null);
     try {
-      const data = await extractRestaurants(params);
+      const data = await extractRestaurants({ ...params, city: citySearch });
       setResults(data);
     } catch (err: any) {
       setError(err.message || 'Ocorreu um erro ao extrair os dados. Tente novamente.');
@@ -44,11 +82,20 @@ export default function App() {
     }
   };
 
+  const handleClear = () => {
+    setResults([]);
+    setError(null);
+  };
+
   const handleDownload = () => {
     if (results.length === 0) return;
-    const filename = `extracao_${params.type.toLowerCase()}_${params.city.toLowerCase()}_${new Date().getTime()}.csv`;
+    const filename = `extracao_${params.type.toLowerCase()}_${citySearch.toLowerCase()}_${new Date().getTime()}.csv`;
     exportToCSV(results, filename);
   };
+
+  const filteredCities = citiesForState.filter(c => 
+    c.toLowerCase().includes(citySearch.toLowerCase())
+  );
 
   return (
     <div className="min-h-screen bg-[#FDFBF7] text-stone-800 font-sans selection:bg-orange-200">
@@ -94,15 +141,18 @@ export default function App() {
                 </label>
                 <select 
                   value={params.state}
-                  onChange={(e) => setParams({...params, state: e.target.value})}
+                  onChange={(e) => {
+                    setParams({...params, state: e.target.value});
+                    setCitySearch(''); // Limpa a cidade ao trocar de estado
+                  }}
                   className="w-full h-11 px-3 bg-stone-50 border border-stone-200 rounded-xl focus:ring-2 focus:ring-orange-500/20 focus:border-orange-500 outline-none transition-all"
                 >
                   {STATES.map(state => <option key={state} value={state}>{state}</option>)}
                 </select>
               </div>
 
-              {/* City */}
-              <div className="space-y-2">
+              {/* City with Autocomplete */}
+              <div className="space-y-2 relative" ref={cityDropdownRef}>
                 <label className="flex items-center gap-2 text-sm font-medium text-stone-700">
                   <MapPin size={16} className="text-stone-400" />
                   Cidade
@@ -110,11 +160,38 @@ export default function App() {
                 <input 
                   type="text"
                   required
-                  value={params.city}
-                  onChange={(e) => setParams({...params, city: e.target.value})}
-                  placeholder="Ex: São Paulo"
+                  value={citySearch}
+                  onChange={(e) => {
+                    setCitySearch(e.target.value);
+                    setShowCityDropdown(true);
+                  }}
+                  onFocus={() => setShowCityDropdown(true)}
+                  placeholder="Digite a cidade..."
                   className="w-full h-11 px-3 bg-stone-50 border border-stone-200 rounded-xl focus:ring-2 focus:ring-orange-500/20 focus:border-orange-500 outline-none transition-all"
                 />
+                
+                {/* Dropdown */}
+                {showCityDropdown && citySearch.length >= 3 && (
+                  <ul className="absolute z-50 w-full mt-1 bg-white border border-stone-200 rounded-xl shadow-lg max-h-60 overflow-y-auto">
+                    {filteredCities.map(city => (
+                      <li 
+                        key={city}
+                        onClick={() => {
+                          setCitySearch(city);
+                          setShowCityDropdown(false);
+                        }}
+                        className="px-4 py-2 hover:bg-orange-50 cursor-pointer text-sm text-stone-700 transition-colors"
+                      >
+                        {city}
+                      </li>
+                    ))}
+                    {filteredCities.length === 0 && (
+                      <li className="px-4 py-3 text-sm text-stone-500 text-center">
+                        Nenhuma cidade encontrada
+                      </li>
+                    )}
+                  </ul>
+                )}
               </div>
 
               {/* Type */}
@@ -210,13 +287,22 @@ export default function App() {
               <h3 className="text-xl font-semibold text-stone-900">
                 Resultados Encontrados ({results.length})
               </h3>
-              <button 
-                onClick={handleDownload}
-                className="h-11 px-5 bg-gradient-to-r from-orange-500 to-rose-500 hover:from-orange-600 hover:to-rose-600 text-white rounded-xl font-medium flex items-center justify-center gap-2 shadow-sm transition-all active:scale-95"
-              >
-                <Download size={18} />
-                Baixar CSV
-              </button>
+              <div className="flex items-center gap-3">
+                <button 
+                  onClick={handleClear}
+                  className="h-11 px-5 bg-white border border-stone-200 hover:bg-stone-50 text-stone-700 rounded-xl font-medium flex items-center justify-center gap-2 shadow-sm transition-all active:scale-95"
+                >
+                  <Trash2 size={18} />
+                  Limpar
+                </button>
+                <button 
+                  onClick={handleDownload}
+                  className="h-11 px-5 bg-gradient-to-r from-orange-500 to-rose-500 hover:from-orange-600 hover:to-rose-600 text-white rounded-xl font-medium flex items-center justify-center gap-2 shadow-sm transition-all active:scale-95"
+                >
+                  <Download size={18} />
+                  Baixar CSV
+                </button>
+              </div>
             </div>
 
             <div className="bg-white rounded-3xl shadow-sm border border-stone-200/60 overflow-hidden">
@@ -236,8 +322,8 @@ export default function App() {
                       <tr key={idx} className="hover:bg-stone-50/50 transition-colors text-sm text-stone-700">
                         <td className="px-6 py-4 font-medium text-stone-900">{item.name}</td>
                         <td className="px-6 py-4">{item.city}</td>
-                        <td className="px-6 py-4">{item.phone}</td>
-                        <td className="px-6 py-4 text-stone-500">{item.email}</td>
+                        <td className="px-6 py-4">{item.phone || '-'}</td>
+                        <td className="px-6 py-4 text-stone-500">{item.email || '-'}</td>
                         <td className="px-6 py-4">
                           <span className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium bg-stone-100 text-stone-600">
                             {item.type}
