@@ -29,7 +29,6 @@ export default function App() {
     state: 'SP',
     city: 'São Paulo',
     type: 'Restaurante',
-    quantity: 10,
     size: 'Qualquer',
     priority: 'Nenhuma',
     timeLimit: 60
@@ -277,22 +276,6 @@ export default function App() {
                   {TIME_LIMITS.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
                 </select>
               </div>
-
-              <div className="space-y-2">
-                <label className="flex items-center gap-2 text-sm font-medium text-stone-700">
-                  <Hash size={16} className="text-stone-400" />
-                  Quantidade
-                </label>
-                <input 
-                  type="number"
-                  min="1"
-                  max="100"
-                  required
-                  value={params.quantity}
-                  onChange={(e) => setParams({...params, quantity: parseInt(e.target.value) || 1})}
-                  className="w-full h-11 px-3 bg-stone-50 border border-stone-200 rounded-xl focus:ring-2 focus:ring-orange-500/20 focus:border-orange-500 outline-none transition-all"
-                />
-              </div>
             </div>
 
             <div className="pt-4 flex items-center justify-end border-t border-stone-100 gap-3">
@@ -314,7 +297,7 @@ export default function App() {
                 {isLoading ? (
                   <>
                     <Loader2 size={18} className="animate-spin" />
-                    Buscando... ({progress}/{params.quantity})
+                    Buscando... ({progress} encontrados)
                   </>
                 ) : (
                   <>

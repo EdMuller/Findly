@@ -8,19 +8,14 @@ export async function extractRestaurants(
   control: { abort: boolean; timeUp: boolean },
   onProgress?: (count: number) => void
 ): Promise<ExtractionResult> {
-  const targetQuantity = params.quantity;
-  // Pedimos um pouco mais para compensar os que serão filtrados pela prioridade,
-  // mas limitamos a 150 para não sobrecarregar a IA e evitar recusas ou alucinações.
-  const requestQuantity = Math.min(targetQuantity * 2, 150); 
-
   const prompt = `Você é um assistente especializado em mineração de dados comerciais REAIS.
 O usuário precisa de estabelecimentos do tipo "${params.type}" (porte: ${params.size}) localizados na cidade de ${params.city}, estado de ${params.state}, Brasil.
 
 ATENÇÃO - REGRAS DE OURO:
-1. TODOS os dados DEVEM SER ESTRITAMENTE REAIS. NUNCA invente, alucine ou crie dados fictícios.
-2. Se não souber o telefone ou email real, DEIXE VAZIO ("").
-3. NUNCA adicione texto explicativo, introduções ou pedidos de desculpas.
-4. Se você não conhecer ${requestQuantity} estabelecimentos reais, retorne APENAS os que você tem certeza absoluta.
+1. USE A FERRAMENTA DE BUSCA DO GOOGLE para encontrar dados reais e atualizados.
+2. TODOS os dados DEVEM SER ESTRITAMENTE REAIS. NUNCA invente, alucine ou crie dados fictícios.
+3. Se não souber o telefone ou email real, DEIXE VAZIO ("").
+4. NUNCA adicione texto explicativo, introduções ou pedidos de desculpas.
 
 A prioridade do usuário é obter estabelecimentos que tenham: ${params.priority !== 'Nenhuma' ? params.priority : 'Qualquer dado'}.
 
@@ -30,7 +25,7 @@ Exemplo exato:
 {"name": "Restaurante Exemplo", "city": "São Paulo", "phone": "(11) 99999-9999", "email": "contato@exemplo.com.br", "type": "Restaurante"}
 {"name": "Outro Local", "city": "São Paulo", "phone": "", "email": "", "type": "Restaurante"}
 
-Gere o máximo de resultados reais que conseguir (limite de ${requestQuantity}).`;
+Gere o máximo de resultados reais que conseguir continuamente, um por linha.`;
 
   let results: Restaurant[] = [];
   let buffer = '';
@@ -40,6 +35,10 @@ Gere o máximo de resultados reais que conseguir (limite de ${requestQuantity}).
     const stream = await ai.models.generateContentStream({
       model: 'gemini-3.1-pro-preview',
       contents: prompt,
+      config: {
+        temperature: 0.1, // Reduz a aleatoriedade, foca em fatos
+        tools: [{ googleSearch: {} }] // Conecta a IA à internet em tempo real
+      }
     });
 
     for await (const chunk of stream) {
@@ -98,20 +97,11 @@ Gere o máximo de resultados reais que conseguir (limite de ${requestQuantity}).
         } catch (e) {
           // Ignora erros de parse em linhas mal formatadas
         }
-
-        if (results.length >= targetQuantity) {
-          reason = 'Busca concluída com sucesso.';
-          break;
-        }
-      }
-
-      if (results.length >= targetQuantity) {
-        break;
       }
     }
 
     // Tenta processar o que sobrou no buffer no final
-    if (buffer.trim() && results.length < targetQuantity && !control.abort && !control.timeUp) {
+    if (buffer.trim() && !control.abort && !control.timeUp) {
       let line = buffer.trim();
       if (line.endsWith(',')) line = line.slice(0, -1);
       try {
@@ -124,11 +114,7 @@ Gere o máximo de resultados reais que conseguir (limite de ${requestQuantity}).
     }
 
     if (!reason) {
-      if (results.length < targetQuantity) {
-        reason = `Não existem ${targetQuantity} estabelecimentos com as características selecionadas disponíveis para listagem. Foram encontrados ${results.length}.`;
-      } else {
-        reason = 'Busca concluída com sucesso.';
-      }
+      reason = 'Busca concluída. A inteligência artificial esgotou as fontes disponíveis para esta pesquisa.';
     }
 
     return { data: results, reason };
