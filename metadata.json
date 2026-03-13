@@ -1,0 +1,5 @@
+{
+  "name": "Extrator de Restaurantes",
+  "description": "Aplicativo para extrair dados de restaurantes e estabelecimentos gastronômicos por cidade e estado.",
+  "requestFramePermissions": []
+}
