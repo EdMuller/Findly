@@ -1,9 +1,9 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { motion } from 'motion/react';
-import { Search, Download, MapPin, Building2, Hash, Maximize, Loader2, Store, ChefHat, Map, AlertCircle, Trash2 } from 'lucide-react';
+import { Search, Download, MapPin, Building2, Hash, Maximize, Loader2, Store, ChefHat, Map, AlertCircle, Trash2, StopCircle, Clock, Star } from 'lucide-react';
 import { extractRestaurants } from './services/gemini';
 import { exportToCSV } from './utils/export';
-import { ExtractionParams, Restaurant } from './types';
+import { ExtractionParams, Restaurant, Priority } from './types';
 
 const STATES = [
   'AC', 'AL', 'AP', 'AM', 'BA', 'CE', 'DF', 'ES', 'GO', 'MA', 'MT', 'MS', 'MG',
@@ -16,6 +16,13 @@ const TYPES = [
 ];
 
 const SIZES = ['Qualquer', 'Pequeno', 'Médio', 'Grande'];
+const PRIORITIES: Priority[] = ['Nenhuma', 'Telefone', 'WhatsApp', 'Email'];
+const TIME_LIMITS = [
+  { label: '30 Segundos', value: 30 },
+  { label: '1 Minuto', value: 60 },
+  { label: '2 Minutos', value: 120 },
+  { label: '5 Minutos', value: 300 }
+];
 
 export default function App() {
   const [params, setParams] = useState<ExtractionParams>({
@@ -23,7 +30,9 @@ export default function App() {
     city: 'São Paulo',
     type: 'Restaurante',
     quantity: 10,
-    size: 'Qualquer'
+    size: 'Qualquer',
+    priority: 'Nenhuma',
+    timeLimit: 60
   });
   
   const [citiesForState, setCitiesForState] = useState<string[]>([]);
@@ -32,10 +41,14 @@ export default function App() {
   const cityDropdownRef = useRef<HTMLDivElement>(null);
 
   const [isLoading, setIsLoading] = useState(false);
+  const [progress, setProgress] = useState(0);
   const [results, setResults] = useState<Restaurant[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [searchReason, setSearchReason] = useState<string | null>(null);
 
-  // Buscar cidades da API do IBGE quando o estado mudar
+  const controlRef = useRef({ abort: false, timeUp: false });
+  const timerRef = useRef<NodeJS.Timeout | null>(null);
+
   useEffect(() => {
     async function fetchCities() {
       if (!params.state) return;
@@ -50,7 +63,6 @@ export default function App() {
     fetchCities();
   }, [params.state]);
 
-  // Fechar o dropdown de cidades ao clicar fora dele
   useEffect(() => {
     function handleClickOutside(event: MouseEvent) {
       if (cityDropdownRef.current && !cityDropdownRef.current.contains(event.target as Node)) {
@@ -64,7 +76,6 @@ export default function App() {
   const handleExtract = async (e: React.FormEvent) => {
     e.preventDefault();
     
-    // Validação da cidade
     if (!citiesForState.includes(citySearch)) {
       setError(`A cidade "${citySearch}" não foi encontrada no estado ${params.state}. Por favor, selecione uma cidade válida na lista.`);
       return;
@@ -72,19 +83,42 @@ export default function App() {
 
     setIsLoading(true);
     setError(null);
+    setSearchReason(null);
+    setResults([]);
+    setProgress(0);
+    
+    controlRef.current = { abort: false, timeUp: false };
+    
+    if (timerRef.current) clearTimeout(timerRef.current);
+    timerRef.current = setTimeout(() => {
+      controlRef.current.timeUp = true;
+    }, params.timeLimit * 1000);
+
     try {
-      const data = await extractRestaurants({ ...params, city: citySearch });
-      setResults(data);
+      const res = await extractRestaurants(
+        { ...params, city: citySearch }, 
+        controlRef.current,
+        (count) => setProgress(count)
+      );
+      setResults(res.data);
+      setSearchReason(res.reason);
     } catch (err: any) {
       setError(err.message || 'Ocorreu um erro ao extrair os dados. Tente novamente.');
     } finally {
+      if (timerRef.current) clearTimeout(timerRef.current);
       setIsLoading(false);
     }
+  };
+
+  const handleStop = () => {
+    controlRef.current.abort = true;
   };
 
   const handleClear = () => {
     setResults([]);
     setError(null);
+    setSearchReason(null);
+    setProgress(0);
   };
 
   const handleDownload = () => {
@@ -94,12 +128,11 @@ export default function App() {
   };
 
   const filteredCities = citiesForState.filter(c => 
-    c.toLowerCase().includes(citySearch.toLowerCase())
+    c.toLowerCase().startsWith(citySearch.toLowerCase())
   );
 
   return (
     <div className="min-h-screen bg-[#FDFBF7] text-stone-800 font-sans selection:bg-orange-200">
-      {/* Header */}
       <header className="bg-white border-b border-stone-200/60 sticky top-0 z-10">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
           <div className="flex items-center gap-2">
@@ -114,7 +147,6 @@ export default function App() {
       </header>
 
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-8">
-        {/* Hero Section */}
         <div className="max-w-3xl">
           <h2 className="text-3xl sm:text-4xl font-semibold tracking-tight text-stone-900 mb-4">
             Encontre contatos de estabelecimentos em segundos.
@@ -124,16 +156,14 @@ export default function App() {
           </p>
         </div>
 
-        {/* Configuration Form */}
         <motion.div 
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
           className="bg-white p-6 sm:p-8 rounded-3xl shadow-sm border border-stone-200/60"
         >
           <form onSubmit={handleExtract} className="space-y-6">
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-6">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
               
-              {/* State */}
               <div className="space-y-2">
                 <label className="flex items-center gap-2 text-sm font-medium text-stone-700">
                   <Map size={16} className="text-stone-400" />
@@ -143,7 +173,7 @@ export default function App() {
                   value={params.state}
                   onChange={(e) => {
                     setParams({...params, state: e.target.value});
-                    setCitySearch(''); // Limpa a cidade ao trocar de estado
+                    setCitySearch('');
                   }}
                   className="w-full h-11 px-3 bg-stone-50 border border-stone-200 rounded-xl focus:ring-2 focus:ring-orange-500/20 focus:border-orange-500 outline-none transition-all"
                 >
@@ -151,7 +181,6 @@ export default function App() {
                 </select>
               </div>
 
-              {/* City with Autocomplete */}
               <div className="space-y-2 relative" ref={cityDropdownRef}>
                 <label className="flex items-center gap-2 text-sm font-medium text-stone-700">
                   <MapPin size={16} className="text-stone-400" />
@@ -170,7 +199,6 @@ export default function App() {
                   className="w-full h-11 px-3 bg-stone-50 border border-stone-200 rounded-xl focus:ring-2 focus:ring-orange-500/20 focus:border-orange-500 outline-none transition-all"
                 />
                 
-                {/* Dropdown */}
                 {showCityDropdown && citySearch.length >= 3 && (
                   <ul className="absolute z-50 w-full mt-1 bg-white border border-stone-200 rounded-xl shadow-lg max-h-60 overflow-y-auto">
                     {filteredCities.map(city => (
@@ -194,7 +222,6 @@ export default function App() {
                 )}
               </div>
 
-              {/* Type */}
               <div className="space-y-2">
                 <label className="flex items-center gap-2 text-sm font-medium text-stone-700">
                   <Store size={16} className="text-stone-400" />
@@ -209,7 +236,6 @@ export default function App() {
                 </select>
               </div>
 
-              {/* Size */}
               <div className="space-y-2">
                 <label className="flex items-center gap-2 text-sm font-medium text-stone-700">
                   <Maximize size={16} className="text-stone-400" />
@@ -224,7 +250,34 @@ export default function App() {
                 </select>
               </div>
 
-              {/* Quantity */}
+              <div className="space-y-2">
+                <label className="flex items-center gap-2 text-sm font-medium text-stone-700">
+                  <Star size={16} className="text-stone-400" />
+                  Prioridade
+                </label>
+                <select 
+                  value={params.priority}
+                  onChange={(e) => setParams({...params, priority: e.target.value as Priority})}
+                  className="w-full h-11 px-3 bg-stone-50 border border-stone-200 rounded-xl focus:ring-2 focus:ring-orange-500/20 focus:border-orange-500 outline-none transition-all"
+                >
+                  {PRIORITIES.map(p => <option key={p} value={p}>{p}</option>)}
+                </select>
+              </div>
+
+              <div className="space-y-2">
+                <label className="flex items-center gap-2 text-sm font-medium text-stone-700">
+                  <Clock size={16} className="text-stone-400" />
+                  Tempo Limite
+                </label>
+                <select 
+                  value={params.timeLimit}
+                  onChange={(e) => setParams({...params, timeLimit: parseInt(e.target.value)})}
+                  className="w-full h-11 px-3 bg-stone-50 border border-stone-200 rounded-xl focus:ring-2 focus:ring-orange-500/20 focus:border-orange-500 outline-none transition-all"
+                >
+                  {TIME_LIMITS.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
+                </select>
+              </div>
+
               <div className="space-y-2">
                 <label className="flex items-center gap-2 text-sm font-medium text-stone-700">
                   <Hash size={16} className="text-stone-400" />
@@ -233,7 +286,7 @@ export default function App() {
                 <input 
                   type="number"
                   min="1"
-                  max="50"
+                  max="100"
                   required
                   value={params.quantity}
                   onChange={(e) => setParams({...params, quantity: parseInt(e.target.value) || 1})}
@@ -242,7 +295,17 @@ export default function App() {
               </div>
             </div>
 
-            <div className="pt-4 flex items-center justify-end border-t border-stone-100">
+            <div className="pt-4 flex items-center justify-end border-t border-stone-100 gap-3">
+              {isLoading && (
+                <button 
+                  type="button"
+                  onClick={handleStop}
+                  className="h-12 px-6 bg-red-100 hover:bg-red-200 text-red-700 rounded-xl font-medium flex items-center gap-2 transition-colors"
+                >
+                  <StopCircle size={18} />
+                  Parar Busca
+                </button>
+              )}
               <button 
                 type="submit" 
                 disabled={isLoading}
@@ -251,7 +314,7 @@ export default function App() {
                 {isLoading ? (
                   <>
                     <Loader2 size={18} className="animate-spin" />
-                    Extraindo Dados...
+                    Buscando... ({progress}/{params.quantity})
                   </>
                 ) : (
                   <>
@@ -264,7 +327,6 @@ export default function App() {
           </form>
         </motion.div>
 
-        {/* Error Message */}
         {error && (
           <motion.div 
             initial={{ opacity: 0, scale: 0.95 }}
@@ -276,7 +338,17 @@ export default function App() {
           </motion.div>
         )}
 
-        {/* Results Section */}
+        {searchReason && !isLoading && (
+          <motion.div 
+            initial={{ opacity: 0, scale: 0.95 }}
+            animate={{ opacity: 1, scale: 1 }}
+            className="bg-orange-50 text-orange-800 p-4 rounded-2xl flex items-start gap-3 border border-orange-100"
+          >
+            <AlertCircle className="shrink-0 mt-0.5" size={20} />
+            <p>{searchReason}</p>
+          </motion.div>
+        )}
+
         {results.length > 0 && (
           <motion.div 
             initial={{ opacity: 0, y: 20 }}
