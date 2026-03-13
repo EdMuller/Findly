@@ -9,23 +9,28 @@ export async function extractRestaurants(
   onProgress?: (count: number) => void
 ): Promise<ExtractionResult> {
   const targetQuantity = params.quantity;
-  const requestQuantity = targetQuantity * 3; // Pedimos mais para compensar os que serão filtrados pela prioridade
+  // Pedimos um pouco mais para compensar os que serão filtrados pela prioridade,
+  // mas limitamos a 150 para não sobrecarregar a IA e evitar recusas ou alucinações.
+  const requestQuantity = Math.min(targetQuantity * 2, 150); 
 
   const prompt = `Você é um assistente especializado em mineração de dados comerciais REAIS.
 O usuário precisa de estabelecimentos do tipo "${params.type}" (porte: ${params.size}) localizados na cidade de ${params.city}, estado de ${params.state}, Brasil.
 
-ATENÇÃO - REGRA DE OURO: TODOS os dados fornecidos DEVEM SER ESTRITAMENTE REAIS e extraídos de fontes públicas seguras. NUNCA invente, alucine, adivinhe ou crie dados fictícios. 
-Se você não souber o telefone ou o email real e exato de um estabelecimento, você DEVE deixar o campo vazio (""). É preferível um campo vazio do que um dado inventado.
+ATENÇÃO - REGRAS DE OURO:
+1. TODOS os dados DEVEM SER ESTRITAMENTE REAIS. NUNCA invente, alucine ou crie dados fictícios.
+2. Se não souber o telefone ou email real, DEIXE VAZIO ("").
+3. NUNCA adicione texto explicativo, introduções ou pedidos de desculpas.
+4. Se você não conhecer ${requestQuantity} estabelecimentos reais, retorne APENAS os que você tem certeza absoluta.
 
 A prioridade do usuário é obter estabelecimentos que tenham: ${params.priority !== 'Nenhuma' ? params.priority : 'Qualquer dado'}.
 
 FORMATO DE SAÍDA OBRIGATÓRIO:
-Você deve retornar APENAS objetos JSON, UM POR LINHA (formato JSONL). Sem blocos de código markdown, sem colchetes de array []. Apenas um objeto por linha.
-Exemplo:
+APENAS objetos JSON, UM POR LINHA (JSONL). Sem blocos markdown (\`\`\`), sem colchetes de array [].
+Exemplo exato:
 {"name": "Restaurante Exemplo", "city": "São Paulo", "phone": "(11) 99999-9999", "email": "contato@exemplo.com.br", "type": "Restaurante"}
 {"name": "Outro Local", "city": "São Paulo", "phone": "", "email": "", "type": "Restaurante"}
 
-Gere o máximo de resultados reais que conseguir (tente chegar a ${requestQuantity}), focando em estabelecimentos que possuam ${params.priority !== 'Nenhuma' ? params.priority : 'dados de contato'}.`;
+Gere o máximo de resultados reais que conseguir (limite de ${requestQuantity}).`;
 
   let results: Restaurant[] = [];
   let buffer = '';
@@ -51,14 +56,19 @@ Gere o máximo de resultados reais que conseguir (tente chegar a ${requestQuanti
       const lines = buffer.split('\n');
       buffer = lines.pop() || ''; // Mantém a última linha incompleta no buffer
 
-      for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed) continue;
-        if (trimmed.startsWith('```')) continue; // Ignora marcadores markdown
+      for (let line of lines) {
+        line = line.trim();
+        if (!line) continue;
+        if (line.startsWith('```')) continue; // Ignora marcadores markdown
+        if (line === '[' || line === ']') continue; // Ignora colchetes se a IA errar o formato
+        
+        // Remove vírgula no final se a IA formatar como array tradicional
+        if (line.endsWith(',')) {
+          line = line.slice(0, -1);
+        }
 
         try {
-          const cleanLine = trimmed.replace(/,$/, ''); // Remove vírgula no final se a IA errar o formato
-          const item = JSON.parse(cleanLine) as Restaurant;
+          const item = JSON.parse(line) as Restaurant;
           
           if (item.name && item.city) {
             let isValid = false;
@@ -98,6 +108,19 @@ Gere o máximo de resultados reais que conseguir (tente chegar a ${requestQuanti
       if (results.length >= targetQuantity) {
         break;
       }
+    }
+
+    // Tenta processar o que sobrou no buffer no final
+    if (buffer.trim() && results.length < targetQuantity && !control.abort && !control.timeUp) {
+      let line = buffer.trim();
+      if (line.endsWith(',')) line = line.slice(0, -1);
+      try {
+        const item = JSON.parse(line) as Restaurant;
+        if (item.name && item.city && !results.some(r => r.name === item.name)) {
+          results.push(item);
+          if (onProgress) onProgress(results.length);
+        }
+      } catch(e) {}
     }
 
     if (!reason) {
