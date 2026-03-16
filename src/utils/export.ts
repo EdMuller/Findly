@@ -1,29 +1,28 @@
-import { Restaurant } from '../types';
+import * as XLSX from 'xlsx';
+import { Restaurant, Priority } from '../types';
 
-export function exportToCSV(data: Restaurant[], filename: string = 'restaurantes.csv') {
-  const headers = ['Nome', 'Cidade', 'Telefone/WhatsApp', 'Email', 'Tipo'];
-  
-  const rows = data.map(item => [
-    `"${(item.name || '').replace(/"/g, '""')}"`,
-    `"${(item.city || '').replace(/"/g, '""')}"`,
-    `"${(item.phone || '').replace(/"/g, '""')}"`,
-    `"${(item.email || '').replace(/"/g, '""')}"`,
-    `"${(item.type || '').replace(/"/g, '""')}"`
-  ]);
+export function exportToExcel(data: Restaurant[], filename: string, priority: Priority) {
+  const filteredData = data.map(item => {
+    const row: any = {
+      'Nome': item.name,
+      'Cidade': item.city,
+      'Tipo': item.type,
+    };
+    
+    if (priority === 'WhatsApp' || priority === 'Telefone') {
+      row['Telefone/WhatsApp'] = item.phone || '-';
+    } else if (priority === 'Email') {
+      row['Email'] = item.email || '-';
+    } else {
+      row['Telefone/WhatsApp'] = item.phone || '-';
+      row['Email'] = item.email || '-';
+    }
+    
+    return row;
+  });
 
-  const csvContent = [
-    headers.join(','),
-    ...rows.map(row => row.join(','))
-  ].join('\n');
-
-  // Add BOM for Excel UTF-8 compatibility
-  const blob = new Blob(["\ufeff" + csvContent], { type: 'text/csv;charset=utf-8;' });
-  const url = URL.createObjectURL(blob);
-  
-  const link = document.createElement('a');
-  link.setAttribute('href', url);
-  link.setAttribute('download', filename);
-  document.body.appendChild(link);
-  link.click();
-  document.body.removeChild(link);
+  const worksheet = XLSX.utils.json_to_sheet(filteredData);
+  const workbook = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(workbook, worksheet, "Resultados");
+  XLSX.writeFile(workbook, filename);
 }

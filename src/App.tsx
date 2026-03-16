@@ -1,9 +1,9 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { motion } from 'motion/react';
-import { Search, Download, MapPin, Building2, Hash, Maximize, Loader2, Store, ChefHat, Map, AlertCircle, Trash2, StopCircle, Clock, Star } from 'lucide-react';
+import { Search, Download, MapPin, Building2, Hash, Maximize, Loader2, Store, ChefHat, Map, AlertCircle, Trash2, StopCircle, Clock, Star, Plus } from 'lucide-react';
 import { extractRestaurants } from './services/gemini';
-import { exportToCSV } from './utils/export';
-import { ExtractionParams, Restaurant, Priority } from './types';
+import { exportToExcel } from './utils/export';
+import { ExtractionParams, Restaurant, Priority, CityConfig } from './types';
 
 const STATES = [
   'AC', 'AL', 'AP', 'AM', 'BA', 'CE', 'DF', 'ES', 'GO', 'MA', 'MT', 'MS', 'MG',
@@ -25,22 +25,20 @@ const TIME_LIMITS = [
 ];
 
 export default function App() {
-  const [params, setParams] = useState<ExtractionParams>({
+  const [params, setParams] = useState<Omit<ExtractionParams, 'cities'>>({
     state: 'SP',
-    city: 'São Paulo',
     type: 'Restaurante',
     size: 'Qualquer',
     priority: 'Nenhuma',
-    timeLimit: 60
   });
   
+  const [cities, setCities] = useState<CityConfig[]>([{ name: 'São Paulo', timeLimit: 60 }]);
   const [citiesForState, setCitiesForState] = useState<string[]>([]);
-  const [citySearch, setCitySearch] = useState('São Paulo');
-  const [showCityDropdown, setShowCityDropdown] = useState(false);
-  const cityDropdownRef = useRef<HTMLDivElement>(null);
+  const [activeCityIndex, setActiveCityIndex] = useState<number | null>(null);
 
   const [isLoading, setIsLoading] = useState(false);
   const [progress, setProgress] = useState(0);
+  const [currentExtractingCity, setCurrentExtractingCity] = useState<string | null>(null);
   const [results, setResults] = useState<Restaurant[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [searchReason, setSearchReason] = useState<string | null>(null);
@@ -62,22 +60,15 @@ export default function App() {
     fetchCities();
   }, [params.state]);
 
-  useEffect(() => {
-    function handleClickOutside(event: MouseEvent) {
-      if (cityDropdownRef.current && !cityDropdownRef.current.contains(event.target as Node)) {
-        setShowCityDropdown(false);
-      }
-    }
-    document.addEventListener("mousedown", handleClickOutside);
-    return () => document.removeEventListener("mousedown", handleClickOutside);
-  }, []);
-
   const handleExtract = async (e: React.FormEvent) => {
     e.preventDefault();
     
-    if (!citiesForState.includes(citySearch)) {
-      setError(`A cidade "${citySearch}" não foi encontrada no estado ${params.state}. Por favor, selecione uma cidade válida na lista.`);
-      return;
+    // Validar todas as cidades
+    for (const city of cities) {
+      if (!city.name || !citiesForState.includes(city.name)) {
+        setError(`A cidade "${city.name}" não foi encontrada no estado ${params.state}. Por favor, selecione uma cidade válida na lista.`);
+        return;
+      }
     }
 
     setIsLoading(true);
@@ -87,25 +78,53 @@ export default function App() {
     setProgress(0);
     
     controlRef.current = { abort: false, timeUp: false };
-    
-    if (timerRef.current) clearTimeout(timerRef.current);
-    timerRef.current = setTimeout(() => {
-      controlRef.current.timeUp = true;
-    }, params.timeLimit * 1000);
+    let allResults: Restaurant[] = [];
+    let finalReason = '';
 
-    try {
-      const res = await extractRestaurants(
-        { ...params, city: citySearch }, 
-        controlRef.current,
-        (count) => setProgress(count)
-      );
-      setResults(res.data);
-      setSearchReason(res.reason);
-    } catch (err: any) {
-      setError(err.message || 'Ocorreu um erro ao extrair os dados. Tente novamente.');
-    } finally {
+    for (let i = 0; i < cities.length; i++) {
+      const city = cities[i];
+      if (controlRef.current.abort) {
+        finalReason = 'Busca interrompida pelo usuário.';
+        break;
+      }
+
+      setCurrentExtractingCity(city.name);
+      setProgress(0);
+      
+      controlRef.current.timeUp = false;
       if (timerRef.current) clearTimeout(timerRef.current);
-      setIsLoading(false);
+      timerRef.current = setTimeout(() => {
+        controlRef.current.timeUp = true;
+      }, city.timeLimit * 1000);
+
+      try {
+        const res = await extractRestaurants(
+          { state: params.state, city: city.name, type: params.type, size: params.size, priority: params.priority }, 
+          controlRef.current,
+          (count) => setProgress(count)
+        );
+        
+        // Evitar duplicatas (mesmo nome e cidade)
+        const newResults = res.data.filter(newItem => 
+          !allResults.some(existing => existing.name === newItem.name && existing.city === newItem.city)
+        );
+        allResults = [...allResults, ...newResults];
+        setResults(allResults);
+        
+        finalReason = res.reason;
+      } catch (err: any) {
+        console.error(`Erro na cidade ${city.name}:`, err);
+      }
+    }
+
+    if (timerRef.current) clearTimeout(timerRef.current);
+    setIsLoading(false);
+    setCurrentExtractingCity(null);
+    
+    if (controlRef.current.abort) {
+      setSearchReason('Busca interrompida pelo usuário.');
+    } else {
+      setSearchReason('Busca concluída em todas as cidades selecionadas.');
     }
   };
 
@@ -122,13 +141,9 @@ export default function App() {
 
   const handleDownload = () => {
     if (results.length === 0) return;
-    const filename = `extracao_${params.type.toLowerCase()}_${citySearch.toLowerCase()}_${new Date().getTime()}.csv`;
-    exportToCSV(results, filename);
+    const filename = `extracao_${params.type.toLowerCase()}_${new Date().getTime()}.xlsx`;
+    exportToExcel(results, filename, params.priority);
   };
-
-  const filteredCities = citiesForState.filter(c => 
-    c.toLowerCase().startsWith(citySearch.toLowerCase())
-  );
 
   return (
     <div className="min-h-screen bg-[#FDFBF7] text-stone-800 font-sans selection:bg-orange-200">
@@ -172,53 +187,12 @@ export default function App() {
                   value={params.state}
                   onChange={(e) => {
                     setParams({...params, state: e.target.value});
-                    setCitySearch('');
+                    setCities([{ name: '', timeLimit: 60 }]);
                   }}
                   className="w-full h-11 px-3 bg-stone-50 border border-stone-200 rounded-xl focus:ring-2 focus:ring-orange-500/20 focus:border-orange-500 outline-none transition-all"
                 >
                   {STATES.map(state => <option key={state} value={state}>{state}</option>)}
                 </select>
-              </div>
-
-              <div className="space-y-2 relative" ref={cityDropdownRef}>
-                <label className="flex items-center gap-2 text-sm font-medium text-stone-700">
-                  <MapPin size={16} className="text-stone-400" />
-                  Cidade
-                </label>
-                <input 
-                  type="text"
-                  required
-                  value={citySearch}
-                  onChange={(e) => {
-                    setCitySearch(e.target.value);
-                    setShowCityDropdown(true);
-                  }}
-                  onFocus={() => setShowCityDropdown(true)}
-                  placeholder="Digite a cidade..."
-                  className="w-full h-11 px-3 bg-stone-50 border border-stone-200 rounded-xl focus:ring-2 focus:ring-orange-500/20 focus:border-orange-500 outline-none transition-all"
-                />
-                
-                {showCityDropdown && citySearch.length >= 3 && (
-                  <ul className="absolute z-50 w-full mt-1 bg-white border border-stone-200 rounded-xl shadow-lg max-h-60 overflow-y-auto">
-                    {filteredCities.map(city => (
-                      <li 
-                        key={city}
-                        onClick={() => {
-                          setCitySearch(city);
-                          setShowCityDropdown(false);
-                        }}
-                        className="px-4 py-2 hover:bg-orange-50 cursor-pointer text-sm text-stone-700 transition-colors"
-                      >
-                        {city}
-                      </li>
-                    ))}
-                    {filteredCities.length === 0 && (
-                      <li className="px-4 py-3 text-sm text-stone-500 text-center">
-                        Nenhuma cidade encontrada
-                      </li>
-                    )}
-                  </ul>
-                )}
               </div>
 
               <div className="space-y-2">
@@ -263,18 +237,97 @@ export default function App() {
                 </select>
               </div>
 
-              <div className="space-y-2">
-                <label className="flex items-center gap-2 text-sm font-medium text-stone-700">
-                  <Clock size={16} className="text-stone-400" />
-                  Tempo Limite
-                </label>
-                <select 
-                  value={params.timeLimit}
-                  onChange={(e) => setParams({...params, timeLimit: parseInt(e.target.value)})}
-                  className="w-full h-11 px-3 bg-stone-50 border border-stone-200 rounded-xl focus:ring-2 focus:ring-orange-500/20 focus:border-orange-500 outline-none transition-all"
-                >
-                  {TIME_LIMITS.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
-                </select>
+              <div className="col-span-1 sm:col-span-2 lg:col-span-4 space-y-4 pt-2">
+                <div className="flex items-center justify-between">
+                  <label className="flex items-center gap-2 text-sm font-medium text-stone-700">
+                    <MapPin size={16} className="text-stone-400" />
+                    Cidades (até 5)
+                  </label>
+                  {cities.length < 5 && (
+                    <button 
+                      type="button" 
+                      onClick={() => setCities([...cities, { name: '', timeLimit: 60 }])}
+                      className="text-sm text-orange-600 font-medium hover:text-orange-700 transition-colors flex items-center gap-1"
+                    >
+                      <Plus size={16} /> Adicionar Cidade
+                    </button>
+                  )}
+                </div>
+                
+                <div className="space-y-3">
+                  {cities.map((city, idx) => (
+                    <div key={idx} className="flex gap-3 items-start relative">
+                      <div className="flex-1 relative">
+                        <input 
+                          type="text"
+                          required
+                          value={city.name}
+                          onChange={(e) => {
+                            const newCities = [...cities];
+                            newCities[idx].name = e.target.value;
+                            setCities(newCities);
+                            setActiveCityIndex(idx);
+                          }}
+                          onFocus={() => setActiveCityIndex(idx)}
+                          onBlur={() => setTimeout(() => setActiveCityIndex(null), 200)}
+                          placeholder={`Nome da cidade ${idx + 1}...`}
+                          className="w-full h-11 px-3 bg-stone-50 border border-stone-200 rounded-xl focus:ring-2 focus:ring-orange-500/20 focus:border-orange-500 outline-none transition-all"
+                        />
+                        
+                        {activeCityIndex === idx && city.name.length >= 3 && (
+                          <ul className="absolute z-50 w-full mt-1 bg-white border border-stone-200 rounded-xl shadow-lg max-h-60 overflow-y-auto">
+                            {citiesForState.filter(c => c.toLowerCase().startsWith(city.name.toLowerCase())).map(c => (
+                              <li 
+                                key={c}
+                                onClick={() => {
+                                  const newCities = [...cities];
+                                  newCities[idx].name = c;
+                                  setCities(newCities);
+                                  setActiveCityIndex(null);
+                                }}
+                                className="px-4 py-2 hover:bg-orange-50 cursor-pointer text-sm text-stone-700 transition-colors"
+                              >
+                                {c}
+                              </li>
+                            ))}
+                            {citiesForState.filter(c => c.toLowerCase().startsWith(city.name.toLowerCase())).length === 0 && (
+                              <li className="px-4 py-3 text-sm text-stone-500 text-center">
+                                Nenhuma cidade encontrada
+                              </li>
+                            )}
+                          </ul>
+                        )}
+                      </div>
+                      
+                      <div className="w-40 shrink-0">
+                        <select 
+                          value={city.timeLimit}
+                          onChange={(e) => {
+                            const newCities = [...cities];
+                            newCities[idx].timeLimit = parseInt(e.target.value);
+                            setCities(newCities);
+                          }}
+                          className="w-full h-11 px-3 bg-stone-50 border border-stone-200 rounded-xl focus:ring-2 focus:ring-orange-500/20 focus:border-orange-500 outline-none transition-all"
+                        >
+                          {TIME_LIMITS.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
+                        </select>
+                      </div>
+
+                      {cities.length > 1 && (
+                        <button 
+                          type="button" 
+                          onClick={() => {
+                            const newCities = cities.filter((_, i) => i !== idx);
+                            setCities(newCities);
+                          }}
+                          className="h-11 px-3 text-stone-400 hover:text-red-500 hover:bg-red-50 rounded-xl transition-colors shrink-0 flex items-center justify-center"
+                        >
+                          <Trash2 size={20} />
+                        </button>
+                      )}
+                    </div>
+                  ))}
+                </div>
               </div>
             </div>
 
@@ -297,7 +350,7 @@ export default function App() {
                 {isLoading ? (
                   <>
                     <Loader2 size={18} className="animate-spin" />
-                    Buscando... ({progress} encontrados)
+                    Buscando em {currentExtractingCity}... ({progress} encontrados)
                   </>
                 ) : (
                   <>
@@ -352,10 +405,10 @@ export default function App() {
                 </button>
                 <button 
                   onClick={handleDownload}
-                  className="h-11 px-5 bg-gradient-to-r from-orange-500 to-rose-500 hover:from-orange-600 hover:to-rose-600 text-white rounded-xl font-medium flex items-center justify-center gap-2 shadow-sm transition-all active:scale-95"
+                  className="h-11 px-5 bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-600 hover:to-teal-600 text-white rounded-xl font-medium flex items-center justify-center gap-2 shadow-sm transition-all active:scale-95"
                 >
                   <Download size={18} />
-                  Baixar CSV
+                  Baixar Excel
                 </button>
               </div>
             </div>
@@ -367,8 +420,8 @@ export default function App() {
                     <tr className="bg-stone-50/50 border-b border-stone-200/60 text-sm font-medium text-stone-500">
                       <th className="px-6 py-4 whitespace-nowrap">Nome</th>
                       <th className="px-6 py-4 whitespace-nowrap">Cidade</th>
-                      <th className="px-6 py-4 whitespace-nowrap">Telefone/WhatsApp</th>
-                      <th className="px-6 py-4 whitespace-nowrap">Email</th>
+                      {params.priority !== 'Email' && <th className="px-6 py-4 whitespace-nowrap">Telefone/WhatsApp</th>}
+                      {params.priority !== 'WhatsApp' && params.priority !== 'Telefone' && <th className="px-6 py-4 whitespace-nowrap">Email</th>}
                       <th className="px-6 py-4 whitespace-nowrap">Tipo</th>
                     </tr>
                   </thead>
@@ -377,8 +430,8 @@ export default function App() {
                       <tr key={idx} className="hover:bg-stone-50/50 transition-colors text-sm text-stone-700">
                         <td className="px-6 py-4 font-medium text-stone-900">{item.name}</td>
                         <td className="px-6 py-4">{item.city}</td>
-                        <td className="px-6 py-4">{item.phone || '-'}</td>
-                        <td className="px-6 py-4 text-stone-500">{item.email || '-'}</td>
+                        {params.priority !== 'Email' && <td className="px-6 py-4">{item.phone || '-'}</td>}
+                        {params.priority !== 'WhatsApp' && params.priority !== 'Telefone' && <td className="px-6 py-4 text-stone-500">{item.email || '-'}</td>}
                         <td className="px-6 py-4">
                           <span className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium bg-stone-100 text-stone-600">
                             {item.type}

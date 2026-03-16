@@ -1,10 +1,10 @@
 import { GoogleGenAI } from '@google/genai';
-import { ExtractionParams, Restaurant, ExtractionResult } from '../types';
+import { SingleExtractionParams, Restaurant, ExtractionResult } from '../types';
 
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
 export async function extractRestaurants(
-  params: ExtractionParams,
+  params: SingleExtractionParams,
   control: { abort: boolean; timeUp: boolean },
   onProgress?: (count: number) => void
 ): Promise<ExtractionResult> {
