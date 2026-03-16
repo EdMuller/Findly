@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { motion } from 'motion/react';
-import { Search, Download, MapPin, Building2, Hash, Maximize, Loader2, Store, ChefHat, Map, AlertCircle, Trash2, StopCircle, Clock, Star, Plus } from 'lucide-react';
+import { Search, Download, MapPin, Building2, Hash, Maximize, Loader2, Store, ChefHat, Map, AlertCircle, Trash2, StopCircle, Clock, Star, Plus, Target, RefreshCw } from 'lucide-react';
 import { extractRestaurants } from './services/gemini';
 import { exportToExcel } from './utils/export';
 import { ExtractionParams, Restaurant, Priority, CityConfig } from './types';
@@ -35,6 +35,10 @@ export default function App() {
   const [cities, setCities] = useState<CityConfig[]>([{ name: 'São Paulo', timeLimit: 60 }]);
   const [citiesForState, setCitiesForState] = useState<string[]>([]);
   const [activeCityIndex, setActiveCityIndex] = useState<number | null>(null);
+
+  const [minResults, setMinResults] = useState<number | ''>('');
+  const [maxRetries, setMaxRetries] = useState<number>(1);
+  const [cityStats, setCityStats] = useState<Record<string, { status: 'idle'|'running'|'done', elapsed: number, count: number }>>({});
 
   const [isLoading, setIsLoading] = useState(false);
   const [progress, setProgress] = useState(0);
@@ -80,41 +84,83 @@ export default function App() {
     controlRef.current = { abort: false, timeUp: false };
     let allResults: Restaurant[] = [];
     let finalReason = '';
+    let attempt = 1;
+    const maxAttempts = minResults ? maxRetries : 1;
 
-    for (let i = 0; i < cities.length; i++) {
-      const city = cities[i];
+    // Inicializa os status das cidades
+    const initialStats: Record<string, any> = {};
+    cities.forEach(c => initialStats[c.name] = { status: 'idle', elapsed: 0, count: 0 });
+    setCityStats(initialStats);
+
+    while (attempt <= maxAttempts) {
+      for (let i = 0; i < cities.length; i++) {
+        const city = cities[i];
+        if (controlRef.current.abort) {
+          finalReason = 'Busca interrompida pelo usuário.';
+          break;
+        }
+
+        setCurrentExtractingCity(city.name);
+        setCityStats(prev => ({ ...prev, [city.name]: { ...prev[city.name], status: 'running', elapsed: 0 } }));
+        
+        const startTime = Date.now();
+        const progressInterval = setInterval(() => {
+          setCityStats(prev => ({
+            ...prev,
+            [city.name]: { ...prev[city.name], elapsed: Date.now() - startTime }
+          }));
+        }, 100);
+        
+        controlRef.current.timeUp = false;
+        if (timerRef.current) clearTimeout(timerRef.current);
+        timerRef.current = setTimeout(() => {
+          controlRef.current.timeUp = true;
+        }, city.timeLimit * 1000);
+
+        try {
+          const existingForCity = allResults.filter(r => r.city === city.name).map(r => r.name);
+          const res = await extractRestaurants(
+            { state: params.state, city: city.name, type: params.type, size: params.size, priority: params.priority, existingNames: existingForCity }, 
+            controlRef.current,
+            (count) => setProgress(allResults.length + count)
+          );
+          
+          // Evitar duplicatas (mesmo nome e cidade)
+          const newResults = res.data.filter(newItem => 
+            !allResults.some(existing => existing.name === newItem.name && existing.city === newItem.city)
+          );
+          allResults = [...allResults, ...newResults];
+          setResults(allResults);
+          setProgress(allResults.length);
+          
+          setCityStats(prev => ({
+            ...prev,
+            [city.name]: { 
+              status: 'done', 
+              elapsed: city.timeLimit * 1000, 
+              count: allResults.filter(r => r.city === city.name).length 
+            }
+          }));
+
+          finalReason = res.reason;
+        } catch (err: any) {
+          console.error(`Erro na cidade ${city.name}:`, err);
+        } finally {
+          clearInterval(progressInterval);
+        }
+      }
+
       if (controlRef.current.abort) {
         finalReason = 'Busca interrompida pelo usuário.';
         break;
       }
 
-      setCurrentExtractingCity(city.name);
-      setProgress(0);
-      
-      controlRef.current.timeUp = false;
-      if (timerRef.current) clearTimeout(timerRef.current);
-      timerRef.current = setTimeout(() => {
-        controlRef.current.timeUp = true;
-      }, city.timeLimit * 1000);
-
-      try {
-        const res = await extractRestaurants(
-          { state: params.state, city: city.name, type: params.type, size: params.size, priority: params.priority }, 
-          controlRef.current,
-          (count) => setProgress(count)
-        );
-        
-        // Evitar duplicatas (mesmo nome e cidade)
-        const newResults = res.data.filter(newItem => 
-          !allResults.some(existing => existing.name === newItem.name && existing.city === newItem.city)
-        );
-        allResults = [...allResults, ...newResults];
-        setResults(allResults);
-        
-        finalReason = res.reason;
-      } catch (err: any) {
-        console.error(`Erro na cidade ${city.name}:`, err);
+      if (minResults && allResults.length >= minResults) {
+        finalReason = `Busca concluída. Meta de ${minResults} resultados atingida!`;
+        break;
       }
+
+      attempt++;
     }
 
     if (timerRef.current) clearTimeout(timerRef.current);
@@ -123,8 +169,10 @@ export default function App() {
     
     if (controlRef.current.abort) {
       setSearchReason('Busca interrompida pelo usuário.');
+    } else if (minResults && allResults.length < minResults) {
+      setSearchReason(`Busca concluída. Foram feitas ${maxAttempts} tentativas, mas não foi possível atingir a meta de ${minResults} resultados.`);
     } else {
-      setSearchReason('Busca concluída em todas as cidades selecionadas.');
+      setSearchReason(finalReason || 'Busca concluída em todas as cidades selecionadas.');
     }
   };
 
@@ -237,6 +285,37 @@ export default function App() {
                 </select>
               </div>
 
+              <div className="space-y-2">
+                <label className="flex items-center gap-2 text-sm font-medium text-stone-700">
+                  <Target size={16} className="text-stone-400" />
+                  Meta Mínima (Opcional)
+                </label>
+                <input 
+                  type="number"
+                  min="1"
+                  value={minResults}
+                  onChange={(e) => setMinResults(e.target.value ? parseInt(e.target.value) : '')}
+                  placeholder="Ex: 50"
+                  className="w-full h-11 px-3 bg-stone-50 border border-stone-200 rounded-xl focus:ring-2 focus:ring-orange-500/20 focus:border-orange-500 outline-none transition-all"
+                />
+              </div>
+
+              <div className="space-y-2">
+                <label className="flex items-center gap-2 text-sm font-medium text-stone-700">
+                  <RefreshCw size={16} className="text-stone-400" />
+                  Máx. Tentativas
+                </label>
+                <input 
+                  type="number"
+                  min="1"
+                  max="5"
+                  value={maxRetries}
+                  onChange={(e) => setMaxRetries(parseInt(e.target.value) || 1)}
+                  disabled={!minResults}
+                  className="w-full h-11 px-3 bg-stone-50 border border-stone-200 rounded-xl focus:ring-2 focus:ring-orange-500/20 focus:border-orange-500 outline-none transition-all disabled:opacity-50"
+                />
+              </div>
+
               <div className="col-span-1 sm:col-span-2 lg:col-span-4 space-y-4 pt-2">
                 <div className="flex items-center justify-between">
                   <label className="flex items-center gap-2 text-sm font-medium text-stone-700">
@@ -254,79 +333,100 @@ export default function App() {
                   )}
                 </div>
                 
-                <div className="space-y-3">
-                  {cities.map((city, idx) => (
-                    <div key={idx} className="flex gap-3 items-start relative">
-                      <div className="flex-1 relative">
-                        <input 
-                          type="text"
-                          required
-                          value={city.name}
-                          onChange={(e) => {
-                            const newCities = [...cities];
-                            newCities[idx].name = e.target.value;
-                            setCities(newCities);
-                            setActiveCityIndex(idx);
-                          }}
-                          onFocus={() => setActiveCityIndex(idx)}
-                          onBlur={() => setTimeout(() => setActiveCityIndex(null), 200)}
-                          placeholder={`Nome da cidade ${idx + 1}...`}
-                          className="w-full h-11 px-3 bg-stone-50 border border-stone-200 rounded-xl focus:ring-2 focus:ring-orange-500/20 focus:border-orange-500 outline-none transition-all"
-                        />
-                        
-                        {activeCityIndex === idx && city.name.length >= 3 && (
-                          <ul className="absolute z-50 w-full mt-1 bg-white border border-stone-200 rounded-xl shadow-lg max-h-60 overflow-y-auto">
-                            {citiesForState.filter(c => c.toLowerCase().startsWith(city.name.toLowerCase())).map(c => (
-                              <li 
-                                key={c}
-                                onClick={() => {
-                                  const newCities = [...cities];
-                                  newCities[idx].name = c;
-                                  setCities(newCities);
-                                  setActiveCityIndex(null);
-                                }}
-                                className="px-4 py-2 hover:bg-orange-50 cursor-pointer text-sm text-stone-700 transition-colors"
-                              >
-                                {c}
-                              </li>
-                            ))}
-                            {citiesForState.filter(c => c.toLowerCase().startsWith(city.name.toLowerCase())).length === 0 && (
-                              <li className="px-4 py-3 text-sm text-stone-500 text-center">
-                                Nenhuma cidade encontrada
-                              </li>
+                <div className="space-y-4">
+                  {cities.map((city, idx) => {
+                    const stats = cityStats[city.name];
+                    return (
+                      <div key={idx} className="flex flex-col gap-2 relative">
+                        <div className="flex gap-3 items-start">
+                          <div className="flex-1 relative">
+                            <input 
+                              type="text"
+                              required
+                              value={city.name}
+                              onChange={(e) => {
+                                const newCities = [...cities];
+                                newCities[idx].name = e.target.value;
+                                setCities(newCities);
+                                setActiveCityIndex(idx);
+                              }}
+                              onFocus={() => setActiveCityIndex(idx)}
+                              onBlur={() => setTimeout(() => setActiveCityIndex(null), 200)}
+                              placeholder={`Nome da cidade ${idx + 1}...`}
+                              className="w-full h-11 px-3 bg-stone-50 border border-stone-200 rounded-xl focus:ring-2 focus:ring-orange-500/20 focus:border-orange-500 outline-none transition-all"
+                            />
+                            
+                            {activeCityIndex === idx && city.name.length >= 3 && (
+                              <ul className="absolute z-50 w-full mt-1 bg-white border border-stone-200 rounded-xl shadow-lg max-h-60 overflow-y-auto">
+                                {citiesForState.filter(c => c.toLowerCase().startsWith(city.name.toLowerCase())).map(c => (
+                                  <li 
+                                    key={c}
+                                    onClick={() => {
+                                      const newCities = [...cities];
+                                      newCities[idx].name = c;
+                                      setCities(newCities);
+                                      setActiveCityIndex(null);
+                                    }}
+                                    className="px-4 py-2 hover:bg-orange-50 cursor-pointer text-sm text-stone-700 transition-colors"
+                                  >
+                                    {c}
+                                  </li>
+                                ))}
+                                {citiesForState.filter(c => c.toLowerCase().startsWith(city.name.toLowerCase())).length === 0 && (
+                                  <li className="px-4 py-3 text-sm text-stone-500 text-center">
+                                    Nenhuma cidade encontrada
+                                  </li>
+                                )}
+                              </ul>
                             )}
-                          </ul>
+                          </div>
+                          
+                          <div className="w-40 shrink-0">
+                            <select 
+                              value={city.timeLimit}
+                              onChange={(e) => {
+                                const newCities = [...cities];
+                                newCities[idx].timeLimit = parseInt(e.target.value);
+                                setCities(newCities);
+                              }}
+                              className="w-full h-11 px-3 bg-stone-50 border border-stone-200 rounded-xl focus:ring-2 focus:ring-orange-500/20 focus:border-orange-500 outline-none transition-all"
+                            >
+                              {TIME_LIMITS.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
+                            </select>
+                          </div>
+
+                          {cities.length > 1 && (
+                            <button 
+                              type="button" 
+                              onClick={() => {
+                                const newCities = cities.filter((_, i) => i !== idx);
+                                setCities(newCities);
+                              }}
+                              className="h-11 px-3 text-stone-400 hover:text-red-500 hover:bg-red-50 rounded-xl transition-colors shrink-0 flex items-center justify-center"
+                            >
+                              <Trash2 size={20} />
+                            </button>
+                          )}
+                        </div>
+
+                        {stats && stats.status !== 'idle' && (
+                          <div className="flex items-center gap-3 text-xs px-1">
+                            {stats.status === 'running' && (
+                              <div className="flex-1 h-1.5 bg-stone-200 rounded-full overflow-hidden">
+                                <div 
+                                  className="h-full bg-orange-500 transition-all duration-100"
+                                  style={{ width: `${Math.min(100, (stats.elapsed / (city.timeLimit * 1000)) * 100)}%` }}
+                                />
+                              </div>
+                            )}
+                            <span className={stats.status === 'done' ? 'text-emerald-600 font-medium' : 'text-stone-500 font-medium'}>
+                              {stats.status === 'done' ? `✓ ${stats.count} resultados encontrados` : `${Math.floor(stats.elapsed / 1000)}s / ${city.timeLimit}s`}
+                            </span>
+                          </div>
                         )}
                       </div>
-                      
-                      <div className="w-40 shrink-0">
-                        <select 
-                          value={city.timeLimit}
-                          onChange={(e) => {
-                            const newCities = [...cities];
-                            newCities[idx].timeLimit = parseInt(e.target.value);
-                            setCities(newCities);
-                          }}
-                          className="w-full h-11 px-3 bg-stone-50 border border-stone-200 rounded-xl focus:ring-2 focus:ring-orange-500/20 focus:border-orange-500 outline-none transition-all"
-                        >
-                          {TIME_LIMITS.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
-                        </select>
-                      </div>
-
-                      {cities.length > 1 && (
-                        <button 
-                          type="button" 
-                          onClick={() => {
-                            const newCities = cities.filter((_, i) => i !== idx);
-                            setCities(newCities);
-                          }}
-                          className="h-11 px-3 text-stone-400 hover:text-red-500 hover:bg-red-50 rounded-xl transition-colors shrink-0 flex items-center justify-center"
-                        >
-                          <Trash2 size={20} />
-                        </button>
-                      )}
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               </div>
             </div>

@@ -8,6 +8,10 @@ export async function extractRestaurants(
   control: { abort: boolean; timeUp: boolean },
   onProgress?: (count: number) => void
 ): Promise<ExtractionResult> {
+  const excludeText = params.existingNames && params.existingNames.length > 0
+    ? `\nATENÇÃO: NÃO retorne os seguintes estabelecimentos, pois já os temos: ${params.existingNames.join(', ')}.`
+    : '';
+
   const prompt = `Você é um assistente especializado em mineração de dados comerciais REAIS.
 O usuário precisa de estabelecimentos do tipo "${params.type}" (porte: ${params.size}) localizados na cidade de ${params.city}, estado de ${params.state}, Brasil.
 
@@ -15,7 +19,7 @@ ATENÇÃO - REGRAS DE OURO:
 1. USE A FERRAMENTA DE BUSCA DO GOOGLE para encontrar dados reais e atualizados.
 2. TODOS os dados DEVEM SER ESTRITAMENTE REAIS. NUNCA invente, alucine ou crie dados fictícios.
 3. Se não souber o telefone ou email real, DEIXE VAZIO ("").
-4. NUNCA adicione texto explicativo, introduções ou pedidos de desculpas.
+4. NUNCA adicione texto explicativo, introduções ou pedidos de desculpas.${excludeText}
 
 A prioridade do usuário é obter estabelecimentos que tenham: ${params.priority !== 'Nenhuma' ? params.priority : 'Qualquer dado'}.
 
